@@ -1,0 +1,31 @@
+[project]
+name = "reelpick"
+version = "0.3.0"
+description = "AI-powered movie recommendations for individuals and groups"
+requires-python = ">=3.9"
+dependencies = [
+  "fastapi==0.115.12",
+  "uvicorn==0.34.3",
+]
+
+[project.optional-dependencies]
+dev = [
+  "httpx==0.28.1",
+  "pytest==8.3.5",
+]
+
+[build-system]
+requires = ["setuptools==78.1.1"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["backend", "prompts"]
+py-modules = ["app", "main"]
+
+[tool.setuptools.package-data]
+backend = ["migrations/*.sql"]
+prompts = ["*.txt"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
