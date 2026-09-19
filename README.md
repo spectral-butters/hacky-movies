@@ -16,12 +16,13 @@ Create a Devin service-user API key in [Settings → Service users](https://app.
 
 ```sh
 export DEVIN_API_KEY="cog_..."
+export DEVIN_ORG_ID="org-..."
 ```
 
 The master recommendation prompt lives in `prompts/movie_search.txt`. It can be replaced without changing the API contract. Optional runtime settings:
 
 ```sh
-export DEVIN_API_BASE_URL="https://api.devin.ai/v1"
+export DEVIN_API_BASE_URL="https://api.devin.ai/v3"
 export DEVIN_SESSION_TIMEOUT_SECONDS="150"
 export MOVIE_SEARCH_PROMPT_PATH="prompts/movie_search.txt"
 ```

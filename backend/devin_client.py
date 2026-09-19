@@ -28,14 +28,16 @@ class DevinClient:
     def __init__(
         self,
         api_key: str,
+        org_id: str,
         *,
-        base_url: str = "https://api.devin.ai/v1",
+        base_url: str = "https://api.devin.ai/v3",
         prompt_path: Path = DEFAULT_PROMPT_PATH,
         poll_interval: float = 2.0,
         session_timeout: float = 150.0,
         request_timeout: float = 30.0,
     ) -> None:
         self.api_key = api_key
+        self.org_id = org_id
         self.base_url = base_url.rstrip("/")
         self.prompt_path = prompt_path
         self.poll_interval = poll_interval
@@ -47,10 +49,14 @@ class DevinClient:
         api_key = os.getenv("DEVIN_API_KEY", "").strip()
         if not api_key:
             raise DevinConfigurationError("DEVIN_API_KEY is not configured.")
+        org_id = os.getenv("DEVIN_ORG_ID", "").strip()
+        if not org_id:
+            raise DevinConfigurationError("DEVIN_ORG_ID is not configured.")
 
         return cls(
             api_key,
-            base_url=os.getenv("DEVIN_API_BASE_URL", "https://api.devin.ai/v1"),
+            org_id,
+            base_url=os.getenv("DEVIN_API_BASE_URL", "https://api.devin.ai/v3"),
             prompt_path=Path(os.getenv("MOVIE_SEARCH_PROMPT_PATH", str(DEFAULT_PROMPT_PATH))),
             poll_interval=float(os.getenv("DEVIN_POLL_INTERVAL_SECONDS", "2")),
             session_timeout=float(os.getenv("DEVIN_SESSION_TIMEOUT_SECONDS", "150")),
@@ -66,15 +72,17 @@ class DevinClient:
     ) -> Dict[str, Any]:
         session = self._request_json(
             "POST",
-            "/sessions",
+            self._sessions_path(),
             {
                 "prompt": self._build_prompt(prompt=prompt, count=count, context=context),
                 "title": "ReelPick movie search",
-                "unlisted": True,
                 "max_acu_limit": 1,
                 "knowledge_ids": [],
+                "repos": [],
+                "resumable": False,
                 "secret_ids": [],
                 "tags": ["reelpick", "movie-recommendation"],
+                "structured_output_required": True,
                 "structured_output_schema": self._output_schema(count),
             },
         )
@@ -84,18 +92,37 @@ class DevinClient:
 
         deadline = time.monotonic() + self.session_timeout
         while time.monotonic() < deadline:
-            details = self._request_json("GET", f"/sessions/{session_id}")
-            status = details.get("status_enum") or details.get("status")
-            if status == "finished":
+            details = self._request_json("GET", f"{self._sessions_path()}/{session_id}")
+            status = details.get("status")
+            status_detail = details.get("status_detail")
+            if details.get("structured_output") is not None or status_detail == "finished":
+                movies = self._extract_movies(details)
+                try:
+                    self._request_json(
+                        "POST",
+                        f"{self._sessions_path()}/{session_id}/archive",
+                    )
+                except DevinAPIError:
+                    pass
                 return {
                     "session_id": session_id,
-                    "movies": self._extract_movies(details),
+                    "movies": movies,
                 }
-            if status in {"blocked", "expired"}:
-                raise DevinAPIError(f"Devin session {status} before returning recommendations.")
+            if status in {"error", "suspended"}:
+                reason = status_detail or status
+                raise DevinAPIError(
+                    f"Devin session stopped with status {reason} before returning recommendations."
+                )
+            if status_detail in {"waiting_for_user", "waiting_for_approval"}:
+                raise DevinAPIError(
+                    f"Devin session is {status_detail.replace('_', ' ')} instead of returning recommendations."
+                )
             time.sleep(self.poll_interval)
 
         raise DevinSessionTimeout("Devin took too long to return movie recommendations.")
+
+    def _sessions_path(self) -> str:
+        return f"/organizations/{self.org_id}/sessions"
 
     def _build_prompt(self, *, prompt: str, count: int, context: Dict[str, Any]) -> str:
         try:

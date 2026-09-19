@@ -76,6 +76,7 @@ def test_recommendations_use_devin_and_normalize_movies() -> None:
 
 def test_missing_api_key_returns_service_unavailable(monkeypatch) -> None:
     monkeypatch.delenv("DEVIN_API_KEY", raising=False)
+    monkeypatch.delenv("DEVIN_ORG_ID", raising=False)
 
     with TestClient(app) as client:
         response = client.post(
@@ -87,10 +88,24 @@ def test_missing_api_key_returns_service_unavailable(monkeypatch) -> None:
     assert response.json()["detail"] == "DEVIN_API_KEY is not configured."
 
 
+def test_missing_org_id_returns_service_unavailable(monkeypatch) -> None:
+    monkeypatch.setenv("DEVIN_API_KEY", "test-key")
+    monkeypatch.delenv("DEVIN_ORG_ID", raising=False)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/recommendations",
+            json={"prompt": "A smart thriller", "count": 1},
+        )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "DEVIN_ORG_ID is not configured."
+
+
 def test_devin_client_builds_context_prompt_and_reads_structured_output(tmp_path) -> None:
     prompt_path = tmp_path / "master.txt"
     prompt_path.write_text("MASTER MOVIE PROMPT", encoding="utf-8")
-    client = DevinClient("test-key", prompt_path=prompt_path)
+    client = DevinClient("test-key", "org-test", prompt_path=prompt_path)
 
     prompt = client._build_prompt(
         prompt="Warm comedy",
@@ -108,7 +123,7 @@ def test_devin_client_builds_context_prompt_and_reads_structured_output(tmp_path
 
 
 def test_devin_client_falls_back_to_json_message() -> None:
-    client = DevinClient("test-key")
+    client = DevinClient("test-key", "org-test")
     payload = client._extract_movies(
         {
             "structured_output": None,
@@ -123,3 +138,28 @@ def test_devin_client_falls_back_to_json_message() -> None:
     )
 
     assert payload == [{"title": "Arrival"}]
+
+
+def test_devin_client_accepts_structured_output_while_waiting_for_user(
+    monkeypatch,
+) -> None:
+    client = DevinClient("test-key", "org-test", poll_interval=0)
+    responses = iter(
+        [
+            {"session_id": "devin-test"},
+            {
+                "status": "running",
+                "status_detail": "waiting_for_user",
+                "structured_output": {"movies": [{"title": "Arrival"}]},
+            },
+            {"session_id": "devin-test", "is_archived": True},
+        ]
+    )
+    monkeypatch.setattr(client, "_request_json", lambda *args, **kwargs: next(responses))
+
+    result = client.recommend(prompt="Thoughtful sci-fi", count=1, context={})
+
+    assert result == {
+        "session_id": "devin-test",
+        "movies": [{"title": "Arrival"}],
+    }
