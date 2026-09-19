@@ -150,6 +150,18 @@ def test_health_and_bootstrap_are_persistent(client) -> None:
     }
 
 
+def test_join_page_uses_root_relative_assets(client) -> None:
+    response = client.get("/join/ABC123")
+
+    assert response.status_code == 200
+    assert 'href="/styles.css"' in response.text
+    assert 'src="/app.js"' in response.text
+    assert client.get("/styles.css").headers["content-type"].startswith("text/css")
+    assert client.get("/app.js").headers["content-type"].startswith(
+        "application/javascript"
+    )
+
+
 def test_recommendations_use_authoritative_backend_context(client) -> None:
     fake_client = FakeDevinClient()
     app.dependency_overrides[get_devin_client] = lambda: fake_client
