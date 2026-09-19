@@ -31,6 +31,7 @@ const state = {
   },
   session: {
     mode: "personal",
+    backendId: null,
     movieIds: movies.slice(0, 5).map((movie) => movie.id),
     index: 0,
     reactions: {},
@@ -38,6 +39,9 @@ const state = {
   },
   chosenMovie: null,
   event: {
+    id: null,
+    inviteCode: null,
+    inviteUrl: "",
     name: "Friday Movie Night",
     date: "2026-09-25",
     prompt: "Something funny, under two hours",
@@ -53,6 +57,68 @@ const app = document.querySelector("#app");
 let gesture = null;
 let holdTimer = null;
 let toastTimer = null;
+const userId = window.location.pathname.startsWith("/join/")
+  ? localStorage.getItem("reelpick-guest-id") || `guest-${crypto.randomUUID()}`
+  : "demo-user";
+if (userId.startsWith("guest-")) localStorage.setItem("reelpick-guest-id", userId);
+
+function apiHeaders(extra = {}) {
+  return {
+    "Content-Type": "application/json",
+    "X-ReelPick-User": userId,
+    ...extra,
+  };
+}
+
+function catalogueMovie(movie) {
+  const factual = movie.factual_metadata || {};
+  return {
+    id: movie.movie_id,
+    title: safeText(movie.title),
+    year: movie.year,
+    poster: Number(factual.poster_sprite || 1),
+    provider: movie.imdb_url ? "IMDb" : "JustWatch",
+    genre: safeText(factual.genre || "Movie"),
+    watch_url:
+      movie.imdb_url ||
+      `https://www.justwatch.com/us/search?q=${encodeURIComponent(plainText(movie.title))}`,
+  };
+}
+
+function applyBootstrap(payload) {
+  (payload.movies || []).forEach((movie) => {
+    const normalized = catalogueMovie(movie);
+    const index = movies.findIndex(({ id }) => id === normalized.id);
+    if (index >= 0) movies[index] = { ...movies[index], ...normalized };
+    else movies.push(normalized);
+    movieById[normalized.id] = movies[index >= 0 ? index : movies.length - 1];
+  });
+  state.library.liked = new Set();
+  state.library.disliked = new Set();
+  state.library.watchlist = new Set();
+  (payload.feedback || []).forEach((feedback) => {
+    if (feedback.dimension === "watched_rating" && feedback.value === "liked") {
+      state.library.liked.add(feedback.movie_id);
+    }
+    if (feedback.dimension === "watched_rating" && feedback.value === "disliked") {
+      state.library.disliked.add(feedback.movie_id);
+    }
+    if (feedback.dimension === "watchlist" && feedback.value === "saved") {
+      state.library.watchlist.add(feedback.movie_id);
+    }
+  });
+}
+
+async function bootstrapBackend() {
+  try {
+    const response = await fetch("/api/bootstrap", { headers: apiHeaders() });
+    if (!response.ok) return;
+    applyBootstrap(await response.json());
+    render();
+  } catch {
+    // Keep the seeded catalogue when the backend is unavailable.
+  }
+}
 
 function icon(name, size = 20) {
   const paths = {
@@ -307,9 +373,10 @@ function renderWatchlist() {
   `;
 }
 
-function startFeed(mode, movieIds) {
+function startFeed(mode, movieIds, backendId = null) {
   state.session = {
     mode,
+    backendId: backendId || state.session.backendId,
     movieIds,
     index: 0,
     reactions: mode === "personal" ? state.session.reactions : {},
@@ -323,20 +390,6 @@ function movieTitles(ids) {
     .map((id) => movieById[id]?.title)
     .filter(Boolean)
     .map(plainText);
-}
-
-function recommendationContext(mode, excludedIds = []) {
-  const watched = Object.entries(state.session.reactions)
-    .filter(([, reaction]) => reaction === "neutral" || reaction === "watched")
-    .map(([id]) => movieById[id]?.title)
-    .filter(Boolean);
-  return {
-    mode,
-    liked: movieTitles(state.library.liked),
-    disliked: movieTitles(state.library.disliked),
-    watched,
-    excluded: movieTitles(new Set([...excludedIds, ...Object.keys(state.session.reactions)])),
-  };
 }
 
 function addRecommendedMovies(recommendations) {
@@ -363,16 +416,22 @@ async function requestRecommendations({ prompt, count, mode, excludedIds = [] })
   try {
     const response = await fetch("/api/recommendations", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: apiHeaders(),
       body: JSON.stringify({
         prompt,
         count,
-        context: recommendationContext(mode, excludedIds),
+        session_id: excludedIds.length ? state.session.backendId : null,
+        event_id: state.event.id,
+        mode: mode === "personal" ? "personal" : "event_nomination",
       }),
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(payload.detail || "Movie search failed.");
-    return addRecommendedMovies(payload.movies);
+    return {
+      movieIds: addRecommendedMovies(payload.movies),
+      sessionId: payload.session_id,
+      shortfallReason: payload.shortfall_reason,
+    };
   } catch (error) {
     showToast(error instanceof Error ? error.message : "Movie search failed.");
     return null;
@@ -387,26 +446,33 @@ async function startPersonalRecommendations({ additional = false } = {}) {
   const count = additional ? Math.max(1, 5 - personalLikes().length) : 5;
   if (!additional) state.session.reactions = {};
   const excludedIds = additional ? state.session.movieIds : [];
-  const movieIds = await requestRecommendations({
+  const result = await requestRecommendations({
     prompt: state.homePrompt,
     count,
     mode: "personal",
     excludedIds,
   });
-  if (movieIds) startFeed("personal", movieIds);
+  if (result?.movieIds.length) {
+    startFeed("personal", result.movieIds, result.sessionId);
+  } else if (result) {
+    showToast(result.shortfallReason || "No additional verified movies found.");
+  }
 }
 
 async function startRoundOneRecommendations() {
-  const movieIds = await requestRecommendations({
+  const result = await requestRecommendations({
     prompt: state.event.prompt,
     count: 5,
     mode: "round1",
     excludedIds: state.event.nominations,
   });
-  if (!movieIds) return;
+  if (!result?.movieIds.length) {
+    if (result) showToast(result.shortfallReason || "No verified movies found.");
+    return;
+  }
   state.event.round = "round1";
   state.event.myPicks = new Set();
-  startFeed("round1", movieIds);
+  startFeed("round1", result.movieIds, result.sessionId);
 }
 
 function currentMovie() {
@@ -660,6 +726,7 @@ function participantList(stage) {
 }
 
 function renderLobby() {
+  const inviteUrl = safeText(state.event.inviteUrl || "Invite link is being created…");
   return `
     <section class="page page--flex">
       ${pageHeader(state.event.name, { right: "Round 1" })}
@@ -669,7 +736,7 @@ function renderLobby() {
       <div class="invite-card">
         <span class="invite-card__label">Invite your people</span>
         <div class="invite-card__link">
-          <code>reelpick.app/join/7K4M</code>
+          <code>${inviteUrl}</code>
           <button class="small-button" data-action="copy-link">${icon("copy", 14)}</button>
           <button class="small-button" data-action="share-link">${icon("share", 14)}</button>
         </div>
@@ -741,6 +808,7 @@ function renderWaitRound1() {
 }
 
 function renderManageRound1() {
+  const inviteUrl = safeText(state.event.inviteUrl || "Invite link unavailable");
   return `
     <section class="page page--flex">
       ${pageHeader("Manage Round 1")}
@@ -755,7 +823,7 @@ function renderManageRound1() {
       <div class="participant-list">${participantList("round1")}</div>
       <div class="invite-card">
         <span class="invite-card__label">Invite link</span>
-        <div class="invite-card__link"><code>reelpick.app/join/7K4M</code><button class="small-button" data-action="copy-link">${icon("copy", 14)}</button><span></span></div>
+        <div class="invite-card__link"><code>${inviteUrl}</code><button class="small-button" data-action="copy-link">${icon("copy", 14)}</button><span></span></div>
       </div>
       <div class="push-bottom">
         <button class="primary-button" data-action="close-round1">Close Round 1</button>
@@ -1042,21 +1110,91 @@ function render() {
   if (state.route === "feed") bindFeedGestures();
 }
 
+async function submitFeedback(movieId, dimension, value, options = {}) {
+  const context = options.context || "personal";
+  const body = {
+    movie_id: movieId,
+    dimension,
+    value,
+    source_surface: options.sourceSurface || state.route,
+    context,
+    session_id:
+      options.sessionId || (context === "session" ? state.session.backendId : null),
+    event_id: context === "event" ? state.event.id : null,
+    reason_code: options.reasonCode || null,
+    reason_text: options.reasonText || null,
+  };
+  try {
+    const response = await fetch("/api/feedback", {
+      method: "POST",
+      headers: apiHeaders({ "Idempotency-Key": crypto.randomUUID() }),
+      body: JSON.stringify(body),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.detail || "Could not save feedback.");
+    return payload.feedback;
+  } catch (error) {
+    showToast(error instanceof Error ? error.message : "Could not save feedback.");
+    return null;
+  }
+}
+
+async function setWatchlist(movieId, saved, sourceSurface = state.route) {
+  if (saved) state.library.watchlist.add(movieId);
+  else state.library.watchlist.delete(movieId);
+  persistLibrary();
+  render();
+  await submitFeedback(movieId, "watchlist", saved ? "saved" : "not_saved", {
+    sourceSurface,
+  });
+}
+
+async function submitWatched(movieId, rating, sourceSurface) {
+  state.library.watchlist.delete(movieId);
+  if (rating === "liked") {
+    state.library.liked.add(movieId);
+    state.library.disliked.delete(movieId);
+  } else if (rating === "disliked") {
+    state.library.disliked.add(movieId);
+    state.library.liked.delete(movieId);
+  }
+  persistLibrary();
+  const sessionId = sourceSurface === "personal_feed" ? state.session.backendId : null;
+  await submitFeedback(movieId, "viewing_status", "watched", {
+    sourceSurface,
+    sessionId,
+  });
+  await submitFeedback(movieId, "watched_rating", rating, {
+    sourceSurface,
+    sessionId,
+  });
+}
+
 function recordReaction(movieId, reaction) {
-  const old = state.session.reactions[movieId];
-  if (old === "like") state.library.liked.delete(movieId);
-  if (old === "dislike") state.library.disliked.delete(movieId);
   state.session.reactions[movieId] = reaction;
-  if (state.session.mode === "personal") {
-    if (reaction === "like") {
-      state.library.liked.add(movieId);
-      state.library.disliked.delete(movieId);
-    }
-    if (reaction === "dislike") {
-      state.library.disliked.add(movieId);
-      state.library.liked.delete(movieId);
-    }
-    if (reaction === "later") state.library.watchlist.add(movieId);
+  if (state.session.mode === "personal" && reaction === "like") {
+    submitFeedback(movieId, "recommendation_interest", "interested", {
+      context: "session",
+      sourceSurface: "personal_feed",
+    });
+  }
+  if (state.session.mode === "personal" && reaction === "dislike") {
+    submitFeedback(movieId, "recommendation_interest", "not_interested", {
+      context: "session",
+      sourceSurface: "personal_feed",
+    });
+  }
+  if (state.session.mode === "personal" && reaction === "later") {
+    state.library.watchlist.add(movieId);
+    submitFeedback(movieId, "watchlist", "saved", {
+      sourceSurface: "personal_feed",
+    });
+  }
+  if (state.session.mode === "round2" && ["like", "dislike"].includes(reaction)) {
+    submitFeedback(movieId, "group_vote", reaction, {
+      context: "event",
+      sourceSurface: "event_vote",
+    });
   }
   persistLibrary();
 }
@@ -1304,13 +1442,12 @@ app.addEventListener("click", (event) => {
       state.modal = null;
       renderOverlays();
     },
-    "quick-save": () => {
-      if (state.library.watchlist.has(movieId)) state.library.watchlist.delete(movieId);
-      else state.library.watchlist.add(movieId);
-      persistLibrary();
+    "quick-save": async () => {
+      const saved = !state.library.watchlist.has(movieId);
+      await setWatchlist(movieId, saved, "movie_detail");
       state.modal = null;
       render();
-      showToast(state.library.watchlist.has(movieId) ? "Saved to Watchlist" : "Removed from Watchlist");
+      showToast(saved ? "Saved to Watchlist" : "Removed from Watchlist");
     },
     "where-to-watch": () => {
       const movie = movieById[movieId];
@@ -1334,68 +1471,55 @@ app.addEventListener("click", (event) => {
       state.actionMenu = null;
       renderOverlays();
     },
-    "remove-preference": () => {
+    "remove-preference": async () => {
       state.library.liked.delete(movieId);
       state.library.disliked.delete(movieId);
       state.actionMenu = null;
       persistLibrary();
       render();
+      await submitFeedback(movieId, "watched_rating", "neutral", {
+        sourceSurface: "preferences",
+      });
     },
-    "move-liked": () => {
-      state.library.disliked.delete(movieId);
-      state.library.liked.add(movieId);
+    "move-liked": async () => {
       state.actionMenu = null;
-      persistLibrary();
+      await submitWatched(movieId, "liked", "preferences");
       render();
       showToast("Moved to liked");
     },
-    "move-disliked": () => {
-      state.library.liked.delete(movieId);
-      state.library.disliked.add(movieId);
+    "move-disliked": async () => {
       state.actionMenu = null;
-      persistLibrary();
+      await submitWatched(movieId, "disliked", "preferences");
       render();
       showToast("Moved to disliked");
     },
-    "add-watchlist": () => {
-      state.library.watchlist.add(movieId);
+    "add-watchlist": async () => {
       state.actionMenu = null;
-      persistLibrary();
-      render();
+      await setWatchlist(movieId, true, "preferences");
       showToast("Added to Watchlist");
     },
-    "remove-watchlist": () => {
-      state.library.watchlist.delete(movieId);
+    "remove-watchlist": async () => {
       state.actionMenu = null;
-      persistLibrary();
-      render();
+      await setWatchlist(movieId, false, "watchlist");
     },
     "watched-from-list": () => {
       state.modal = { type: "watched", movieId, source: "watchlist" };
       renderOverlays();
     },
-    "watched-answer": () => {
+    "watched-answer": async () => {
       const { movieId: watchedId, source } = state.modal;
       const answer = target.dataset.answer;
+      const rating = answer === "yes" ? "liked" : answer === "no" ? "disliked" : "neutral";
+      await submitWatched(watchedId, rating, source === "feed" ? "personal_feed" : "watchlist");
       if (source === "feed") {
-        const reaction = answer === "yes" ? "like" : answer === "no" ? "dislike" : "neutral";
-        recordReaction(watchedId, reaction);
+        const reaction = "watched";
+        state.session.reactions[watchedId] = reaction;
         state.modal = null;
         renderOverlays();
         showReactionStamp(reaction);
         window.setTimeout(nextMovie, 300);
       } else {
-        state.library.watchlist.delete(watchedId);
-        if (answer === "yes") {
-          state.library.liked.add(watchedId);
-          state.library.disliked.delete(watchedId);
-        }
-        if (answer === "no") {
-          state.library.disliked.add(watchedId);
-          state.library.liked.delete(watchedId);
-        }
         state.modal = null;
-        persistLibrary();
         render();
         showToast("Watchlist updated");
       }
@@ -1412,17 +1536,15 @@ app.addEventListener("click", (event) => {
       state.chosenMovie = movieId;
       navigate("personal-final");
     },
-    "save-chosen": () => {
-      state.library.watchlist.add(state.chosenMovie);
-      persistLibrary();
-      render();
+    "save-chosen": async () => {
+      await setWatchlist(state.chosenMovie, true, "final_choice");
       showToast("Saved to Watchlist");
     },
     "event-prompt-chip": () => {
       const input = document.querySelector("#eventPrompt");
       if (input) input.value = target.dataset.value;
     },
-    "submit-event": () => {
+    "submit-event": async () => {
       const name = document.querySelector("#eventName")?.value.trim();
       const date = document.querySelector("#eventDate")?.value;
       const prompt = document.querySelector("#eventPrompt")?.value.trim();
@@ -1432,17 +1554,53 @@ app.addEventListener("click", (event) => {
       state.event.prompt = prompt;
       state.event.round = "inviting";
       state.event.completed = false;
+      state.loading = true;
+      state.loadingMessage = "Creating your movie night…";
+      renderOverlays();
+      try {
+        const response = await fetch("/api/events", {
+          method: "POST",
+          headers: apiHeaders(),
+          body: JSON.stringify({
+            name,
+            event_date: date || null,
+            prompt,
+          }),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.detail || "Could not create movie night.");
+        state.event.id = payload.event_id;
+        state.event.inviteCode = payload.invite_code;
+        state.event.inviteUrl = payload.invite_url;
+      } catch (error) {
+        showToast(error instanceof Error ? error.message : "Could not create movie night.");
+        return;
+      } finally {
+        state.loading = false;
+        state.loadingMessage = "";
+      }
       navigate("lobby");
     },
     "copy-link": async () => {
       try {
-        await navigator.clipboard.writeText("https://reelpick.app/join/7K4M");
+        await navigator.clipboard.writeText(state.event.inviteUrl);
       } catch {
         // Clipboard may be restricted in preview iframes.
       }
       showToast("Invite link copied");
     },
-    "share-link": () => showToast("Native share sheet opened"),
+    "share-link": async () => {
+      if (navigator.share) {
+        await navigator.share({ title: state.event.name, url: state.event.inviteUrl });
+      } else {
+        try {
+          await navigator.clipboard.writeText(state.event.inviteUrl);
+        } catch {
+          // Clipboard may be restricted in preview iframes.
+        }
+      }
+      showToast("Invite ready to share");
+    },
     "manage-event": () => navigate("manage-round1"),
     "start-round1": () => {
       startRoundOneRecommendations();
@@ -1513,5 +1671,35 @@ app.addEventListener("click", (event) => {
   handlers[action]?.();
 });
 
+async function loadInviteFromPath() {
+  const match = window.location.pathname.match(/^\/join\/([A-Za-z0-9]+)$/);
+  if (!match) return;
+  const inviteCode = match[1];
+  try {
+    const eventResponse = await fetch(`/api/events/${encodeURIComponent(inviteCode)}`, {
+      headers: apiHeaders(),
+    });
+    const eventPayload = await eventResponse.json().catch(() => ({}));
+    if (!eventResponse.ok) throw new Error(eventPayload.detail || "Movie night not found.");
+    await fetch(`/api/events/${encodeURIComponent(inviteCode)}/join`, {
+      method: "POST",
+      headers: apiHeaders(),
+      body: JSON.stringify({ display_name: "Guest" }),
+    });
+    state.event.id = eventPayload.event_id;
+    state.event.inviteCode = eventPayload.invite_code;
+    state.event.inviteUrl = eventPayload.invite_url;
+    state.event.name = eventPayload.name;
+    state.event.date = eventPayload.event_date || "";
+    state.event.prompt = eventPayload.prompt;
+    state.event.round = eventPayload.status || "inviting";
+    navigate("lobby", { replace: true });
+  } catch (error) {
+    showToast(error instanceof Error ? error.message : "Movie night not found.");
+  }
+}
+
 restoreLibrary();
 render();
+bootstrapBackend();
+loadInviteFromPath();

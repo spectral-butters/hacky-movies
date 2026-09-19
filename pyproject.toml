@@ -1,6 +1,6 @@
 [project]
 name = "reelpick"
-version = "0.2.0"
+version = "0.3.0"
 description = "AI-powered movie recommendations for individuals and groups"
 requires-python = ">=3.9"
 dependencies = [
@@ -19,7 +19,11 @@ requires = ["setuptools==78.1.1"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["backend"]
+packages = ["backend", "prompts"]
+
+[tool.setuptools.package-data]
+backend = ["migrations/*.sql"]
+prompts = ["*.txt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
