@@ -2,106 +2,23 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+    <meta name="theme-color" content="#f3ecdd" />
     <meta
       name="description"
-      content="Scene — an AI-powered, short-form movie recommendation prototype."
+      content="ReelPick — AI-powered movie recommendations for one or a whole group."
     />
-    <title>Scene — Find tonight's movie</title>
+    <title>ReelPick</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=DM+Sans:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <main class="prototype-shell">
-      <aside class="intro-panel">
-        <div>
-          <a class="brand brand--desktop" href="#" aria-label="Scene home">
-            <span class="brand-mark">S</span>
-            <span>SCENE</span>
-          </a>
-          <p class="eyebrow">Hackathon prototype</p>
-          <h1>Less scrolling.<br />More watching.</h1>
-          <p class="intro-copy">
-            An AI movie matchmaker that turns decision fatigue into a fast,
-            social, short-form experience.
-          </p>
-        </div>
-
-        <div class="flow-summary">
-          <p class="summary-label">Core loop</p>
-          <div class="summary-step">
-            <span>01</span>
-            <p><strong>Describe the vibe</strong>Natural language, no filters.</p>
-          </div>
-          <div class="summary-step">
-            <span>02</span>
-            <p><strong>React to 5 scenes</strong>Swipe, save, or teach the AI.</p>
-          </div>
-          <div class="summary-step">
-            <span>03</span>
-            <p><strong>Pick & press play</strong>Refine once or start watching.</p>
-          </div>
-        </div>
-
-        <div class="prototype-note">
-          <span class="pulse"></span>
-          Interactive flow prototype
-        </div>
-      </aside>
-
-      <section class="demo-stage">
-        <header class="stage-header">
-          <div class="brand brand--mobile">
-            <span class="brand-mark">S</span>
-            <span>SCENE</span>
-          </div>
-          <div class="mode-switch" role="tablist" aria-label="Choose a flow">
-            <button class="mode-button active" data-mode="solo" role="tab">
-              Just me
-            </button>
-            <button class="mode-button" data-mode="group" role="tab">
-              Group night
-            </button>
-          </div>
-          <button class="icon-button" id="restartButton" aria-label="Restart flow">
-            ↻
-          </button>
-        </header>
-
-        <div class="screen-nav" id="screenNav" aria-label="Flow screens"></div>
-
-        <div class="phone-wrap">
-          <div class="phone" id="phone">
-            <div class="phone-status">
-              <span>9:41</span>
-              <div><span>●●●</span><span>⌁</span><span>▰</span></div>
-            </div>
-            <div id="appScreen" class="app-screen" aria-live="polite"></div>
-            <div class="home-indicator"></div>
-          </div>
-
-          <button class="nav-arrow nav-arrow--left" id="prevButton" aria-label="Previous screen">
-            ←
-          </button>
-          <button class="nav-arrow nav-arrow--right" id="nextButton" aria-label="Next screen">
-            →
-          </button>
-        </div>
-
-        <footer class="stage-footer">
-          <p id="screenDescription"></p>
-          <div class="keyboard-hint">
-            <kbd>←</kbd><kbd>→</kbd><span>to explore</span>
-          </div>
-        </footer>
-      </section>
-    </main>
-
+    <main id="app" class="app-shell" aria-live="polite"></main>
     <script src="app.js"></script>
   </body>
 </html>
