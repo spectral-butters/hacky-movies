@@ -1173,6 +1173,62 @@ button:disabled {
   animation: fade 150ms ease both;
 }
 
+.loading-shade {
+  position: fixed;
+  z-index: 105;
+  inset: 0;
+  display: grid;
+  width: min(100%, 480px);
+  margin: 0 auto;
+  padding: 24px;
+  place-items: center;
+  background: rgba(20, 17, 14, 0.7);
+  backdrop-filter: blur(8px);
+  animation: fade 150ms ease both;
+}
+
+.loading-card {
+  display: grid;
+  width: min(100%, 300px);
+  padding: 28px 24px;
+  place-items: center;
+  border: var(--border);
+  border-radius: 20px;
+  background: var(--ivory);
+  text-align: center;
+  box-shadow: 5px 5px 0 var(--orange);
+}
+
+.loading-card strong {
+  margin-top: 16px;
+  font-family: var(--display);
+  font-size: 20px;
+  letter-spacing: -0.05em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.loading-card p {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.loading-spinner {
+  width: 38px;
+  height: 38px;
+  border: 3px solid var(--ivory-deep);
+  border-top-color: var(--orange);
+  border-radius: 50%;
+  animation: loading-spin 750ms linear infinite;
+}
+
+@keyframes loading-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .modal {
   width: 100%;
   padding: 24px 20px max(24px, env(safe-area-inset-bottom));

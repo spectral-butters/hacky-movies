@@ -20,6 +20,8 @@ const state = {
   modal: null,
   actionMenu: null,
   toast: "",
+  loading: false,
+  loadingMessage: "",
   homePrompt: "A funny movie like The Matrix, but lighter",
   preferenceTab: "liked",
   library: {
@@ -91,6 +93,16 @@ function escapeHtml(value) {
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
+}
+
+function plainText(value) {
+  const decoder = document.createElement("textarea");
+  decoder.innerHTML = String(value);
+  return decoder.value;
+}
+
+function safeText(value) {
+  return escapeHtml(plainText(value));
 }
 
 function navigate(route, { replace = false } = {}) {
@@ -304,6 +316,97 @@ function startFeed(mode, movieIds) {
     originalPrompt: mode === "personal" ? state.homePrompt : state.event.prompt,
   };
   navigate("feed");
+}
+
+function movieTitles(ids) {
+  return [...ids]
+    .map((id) => movieById[id]?.title)
+    .filter(Boolean)
+    .map(plainText);
+}
+
+function recommendationContext(mode, excludedIds = []) {
+  const watched = Object.entries(state.session.reactions)
+    .filter(([, reaction]) => reaction === "neutral" || reaction === "watched")
+    .map(([id]) => movieById[id]?.title)
+    .filter(Boolean);
+  return {
+    mode,
+    liked: movieTitles(state.library.liked),
+    disliked: movieTitles(state.library.disliked),
+    watched,
+    excluded: movieTitles(new Set([...excludedIds, ...Object.keys(state.session.reactions)])),
+  };
+}
+
+function addRecommendedMovies(recommendations) {
+  return recommendations.map((recommendation) => {
+    const movie = {
+      ...recommendation,
+      title: safeText(recommendation.title),
+      genre: safeText(recommendation.genre),
+      provider: safeText(recommendation.provider),
+      hook: safeText(recommendation.hook),
+    };
+    const existingIndex = movies.findIndex(({ id }) => id === movie.id);
+    if (existingIndex >= 0) movies[existingIndex] = movie;
+    else movies.push(movie);
+    movieById[movie.id] = movie;
+    return movie.id;
+  });
+}
+
+async function requestRecommendations({ prompt, count, mode, excludedIds = [] }) {
+  state.loading = true;
+  state.loadingMessage = mode === "round1" ? "Building picks for your group…" : "Devin is finding your movies…";
+  renderOverlays();
+  try {
+    const response = await fetch("/api/recommendations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        prompt,
+        count,
+        context: recommendationContext(mode, excludedIds),
+      }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.detail || "Movie search failed.");
+    return addRecommendedMovies(payload.movies);
+  } catch (error) {
+    showToast(error instanceof Error ? error.message : "Movie search failed.");
+    return null;
+  } finally {
+    state.loading = false;
+    state.loadingMessage = "";
+    renderOverlays();
+  }
+}
+
+async function startPersonalRecommendations({ additional = false } = {}) {
+  const count = additional ? Math.max(1, 5 - personalLikes().length) : 5;
+  if (!additional) state.session.reactions = {};
+  const excludedIds = additional ? state.session.movieIds : [];
+  const movieIds = await requestRecommendations({
+    prompt: state.homePrompt,
+    count,
+    mode: "personal",
+    excludedIds,
+  });
+  if (movieIds) startFeed("personal", movieIds);
+}
+
+async function startRoundOneRecommendations() {
+  const movieIds = await requestRecommendations({
+    prompt: state.event.prompt,
+    count: 5,
+    mode: "round1",
+    excludedIds: state.event.nominations,
+  });
+  if (!movieIds) return;
+  state.event.round = "round1";
+  state.event.myPicks = new Set();
+  startFeed("round1", movieIds);
 }
 
 function currentMovie() {
@@ -897,8 +1000,19 @@ function renderOverlays() {
   document.querySelector(".drawer-shade")?.remove();
   document.querySelector(".modal-shade")?.remove();
   document.querySelector(".action-menu")?.remove();
+  document.querySelector(".loading-shade")?.remove();
   document.querySelector(".toast")?.remove();
-  app.insertAdjacentHTML("beforeend", renderDrawer() + renderModal() + renderActionMenu() + (state.toast ? `<div class="toast">${state.toast}</div>` : ""));
+  const loading = state.loading
+    ? `<div class="loading-shade" role="status"><div class="loading-card"><span class="loading-spinner"></span><strong>${state.loadingMessage}</strong><p>This can take a minute.</p></div></div>`
+    : "";
+  app.insertAdjacentHTML(
+    "beforeend",
+    renderDrawer() +
+      renderModal() +
+      renderActionMenu() +
+      loading +
+      (state.toast ? `<div class="toast">${state.toast}</div>` : ""),
+  );
 }
 
 function render() {
@@ -1134,6 +1248,7 @@ function persistLibrary() {
         liked: [...state.library.liked],
         disliked: [...state.library.disliked],
         watchlist: [...state.library.watchlist],
+        catalog: movies,
       }),
     );
   } catch {
@@ -1148,6 +1263,7 @@ function restoreLibrary() {
     state.library.liked = new Set(stored.liked || []);
     state.library.disliked = new Set(stored.disliked || []);
     state.library.watchlist = new Set(stored.watchlist || []);
+    if (Array.isArray(stored.catalog)) addRecommendedMovies(stored.catalog);
   } catch {
     // Keep the seeded mock data.
   }
@@ -1177,8 +1293,7 @@ app.addEventListener("click", (event) => {
     "create-event": () => navigate("create-event"),
     "start-personal": () => {
       state.homePrompt = document.querySelector("#homePrompt")?.value.trim() || state.homePrompt;
-      state.session.reactions = {};
-      startFeed("personal", movies.slice(0, 5).map((movie) => movie.id));
+      startPersonalRecommendations();
     },
     voice: () => showToast("Voice input is mocked for the demo"),
     "open-movie": () => {
@@ -1197,7 +1312,12 @@ app.addEventListener("click", (event) => {
       render();
       showToast(state.library.watchlist.has(movieId) ? "Saved to Watchlist" : "Removed from Watchlist");
     },
-    "where-to-watch": () => showToast(`Opening ${movieById[movieId].provider}…`),
+    "where-to-watch": () => {
+      const movie = movieById[movieId];
+      const destination =
+        movie.watch_url || `https://www.justwatch.com/us/search?q=${encodeURIComponent(plainText(movie.title))}`;
+      window.open(destination, "_blank", "noopener,noreferrer");
+    },
     "pref-tab": () => {
       state.preferenceTab = target.dataset.tab;
       render();
@@ -1286,8 +1406,7 @@ app.addEventListener("click", (event) => {
     },
     "choose-likes": () => navigate("personal-choice"),
     "more-recommendations": () => {
-      const need = Math.max(1, 5 - personalLikes().length);
-      startFeed("personal", movies.slice(5, 5 + need).map((movie) => movie.id));
+      startPersonalRecommendations({ additional: true });
     },
     "choose-personal-movie": () => {
       state.chosenMovie = movieId;
@@ -1326,9 +1445,7 @@ app.addEventListener("click", (event) => {
     "share-link": () => showToast("Native share sheet opened"),
     "manage-event": () => navigate("manage-round1"),
     "start-round1": () => {
-      state.event.round = "round1";
-      state.event.myPicks = new Set();
-      startFeed("round1", movies.slice(0, 5).map((movie) => movie.id));
+      startRoundOneRecommendations();
     },
     "toggle-nomination": () => {
       if (state.event.myPicks.has(movieId)) state.event.myPicks.delete(movieId);
