@@ -20,7 +20,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 packages = ["backend", "prompts"]
-py-modules = ["main"]
+py-modules = ["app", "main"]
 
 [tool.setuptools.package-data]
 backend = ["migrations/*.sql"]
