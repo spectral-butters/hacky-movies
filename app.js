@@ -42,6 +42,8 @@ const state = {
     id: null,
     inviteCode: null,
     inviteUrl: "",
+    isHost: true,
+    backendParticipants: [],
     name: "Friday Movie Night",
     date: "2026-09-25",
     prompt: "Something funny, under two hours",
@@ -698,26 +700,50 @@ function renderCreateEvent() {
 }
 
 function participants(stage = "lobby") {
+  if (state.event.backendParticipants.length) {
+    const colors = ["var(--orange)", "var(--blue)", "var(--green)", "var(--amber)"];
+    return state.event.backendParticipants.map((participant, index) => {
+      const name = safeText(participant.display_name);
+      const initials = safeText(
+        plainText(participant.display_name)
+          .split(/\s+/)
+          .filter(Boolean)
+          .slice(0, 2)
+          .map((part) => part[0])
+          .join("")
+          .toUpperCase(),
+      );
+      const status =
+        participant.role === "host"
+          ? "Host"
+          : stage === "lobby"
+            ? "Joined"
+            : stage === "round1"
+              ? "Choosing"
+              : "Not started";
+      return [initials || "RP", name, status, colors[index % colors.length], participant.role];
+    });
+  }
   const statuses = {
     lobby: ["Host", "Joined", "Joined", "Waiting"],
     round1: ["Ready", "Ready", "Choosing", "Ready"],
     round2: ["Finished", "Finished", "Voting", "Not started"],
   }[stage];
   return [
-    ["AS", "Alex", statuses[0], "var(--orange)"],
-    ["MI", "Mia", statuses[1], "var(--blue)"],
-    ["NO", "Noah", statuses[2], "var(--green)"],
-    ["JO", "Jo", statuses[3], "var(--amber)"],
+    ["AS", "Alex", statuses[0], "var(--orange)", "host"],
+    ["MI", "Mia", statuses[1], "var(--blue)", "participant"],
+    ["NO", "Noah", statuses[2], "var(--green)", "participant"],
+    ["JO", "Jo", statuses[3], "var(--amber)", "participant"],
   ];
 }
 
 function participantList(stage) {
   return participants(stage)
     .map(
-      ([initials, name, status, color], index) => `
+      ([initials, name, status, color, role]) => `
         <div class="participant">
           <span class="avatar" style="background:${color};${color === "var(--amber)" ? "color:var(--ink)" : ""}">${initials}</span>
-          <span><strong>${name}${index === 0 ? " · Host" : ""}</strong><small>${index === 0 ? "Created this movie night" : "Joined by link"}</small></span>
+          <span><strong>${name}${role === "host" ? " · Host" : ""}</strong><small>${role === "host" ? "Created this movie night" : "Joined by link"}</small></span>
           <span class="participant__status">${status}</span>
         </div>
       `,
@@ -727,6 +753,14 @@ function participantList(stage) {
 
 function renderLobby() {
   const inviteUrl = safeText(state.event.inviteUrl || "Invite link is being created…");
+  const participantCount = state.event.backendParticipants.length || 4;
+  const roleLabel = state.event.isHost ? "You’re the host" : "You joined by link";
+  const controls = state.event.isHost
+    ? `
+        <button class="primary-button" data-action="start-round1">Start choosing ${icon("arrow", 17)}</button>
+        <button class="secondary-button" data-action="manage-event">Manage event</button>
+      `
+    : `<p class="lede">Waiting for the host to start Round 1.</p>`;
   return `
     <section class="page page--flex">
       ${pageHeader(state.event.name, { right: "Round 1" })}
@@ -741,11 +775,10 @@ function renderLobby() {
           <button class="small-button" data-action="share-link">${icon("share", 14)}</button>
         </div>
       </div>
-      <div class="section-heading"><h2>4 participants</h2><span style="font-size:9px;color:var(--muted)">You’re the host</span></div>
+      <div class="section-heading"><h2>${participantCount} ${participantCount === 1 ? "participant" : "participants"}</h2><span style="font-size:9px;color:var(--muted)">${roleLabel}</span></div>
       <div class="participant-list">${participantList("lobby")}</div>
       <div class="button-stack push-bottom">
-        <button class="primary-button" data-action="start-round1">Start choosing ${icon("arrow", 17)}</button>
-        <button class="secondary-button" data-action="manage-event">Manage event</button>
+        ${controls}
       </div>
     </section>
   `;
@@ -1572,6 +1605,8 @@ app.addEventListener("click", (event) => {
         state.event.id = payload.event_id;
         state.event.inviteCode = payload.invite_code;
         state.event.inviteUrl = payload.invite_url;
+        state.event.isHost = true;
+        state.event.backendParticipants = payload.participants || [];
       } catch (error) {
         showToast(error instanceof Error ? error.message : "Could not create movie night.");
         return;
@@ -1681,11 +1716,13 @@ async function loadInviteFromPath() {
     });
     const eventPayload = await eventResponse.json().catch(() => ({}));
     if (!eventResponse.ok) throw new Error(eventPayload.detail || "Movie night not found.");
-    await fetch(`/api/events/${encodeURIComponent(inviteCode)}/join`, {
+    const joinResponse = await fetch(`/api/events/${encodeURIComponent(inviteCode)}/join`, {
       method: "POST",
       headers: apiHeaders(),
       body: JSON.stringify({ display_name: "Guest" }),
     });
+    const joinPayload = await joinResponse.json().catch(() => ({}));
+    if (!joinResponse.ok) throw new Error(joinPayload.detail || "Could not join movie night.");
     state.event.id = eventPayload.event_id;
     state.event.inviteCode = eventPayload.invite_code;
     state.event.inviteUrl = eventPayload.invite_url;
@@ -1693,6 +1730,8 @@ async function loadInviteFromPath() {
     state.event.date = eventPayload.event_date || "";
     state.event.prompt = eventPayload.prompt;
     state.event.round = eventPayload.status || "inviting";
+    state.event.isHost = eventPayload.host_user_id === userId;
+    state.event.backendParticipants = joinPayload.participants || eventPayload.participants || [];
     navigate("lobby", { replace: true });
   } catch (error) {
     showToast(error instanceof Error ? error.message : "Movie night not found.");
