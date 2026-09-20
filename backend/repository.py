@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import secrets
 from typing import Any, Dict, List, Optional, Tuple
@@ -18,6 +19,21 @@ class ConflictError(RuntimeError):
 
 class NotFoundError(RuntimeError):
     pass
+
+
+RECOMMENDATION_PROVIDERS = ("devin", "nebius")
+
+
+def default_recommendation_provider() -> str:
+    configured = os.getenv("RECOMMENDATION_PROVIDER", "").strip().lower()
+    return configured if configured in RECOMMENDATION_PROVIDERS else "devin"
+
+
+DEFAULT_RECOMMENDATION_PROVIDER = default_recommendation_provider()
+
+
+def _stage_for(status: str) -> str:
+    return {"round1": "round1", "round2": "round2"}.get(status, "round1")
 
 
 class ReelPickRepository:
@@ -59,6 +75,67 @@ class ReelPickRepository:
                 (description.strip(), utc_now(), user_id),
             )
 
+    def get_recommendation_provider(self, user_id: str) -> str:
+        user = self.ensure_user(user_id)
+        provider = (user.get("recommendation_provider") or "").strip()
+        return provider or DEFAULT_RECOMMENDATION_PROVIDER
+
+    def set_recommendation_provider(self, user_id: str, provider: str) -> str:
+        if provider not in RECOMMENDATION_PROVIDERS:
+            raise ConflictError("Unknown recommendation provider.")
+        self.ensure_user(user_id)
+        with self.database.write_connection() as connection:
+            connection.execute(
+                """
+                UPDATE users
+                SET recommendation_provider = ?, updated_at = ?
+                WHERE user_id = ?
+                """,
+                (provider, utc_now(), user_id),
+            )
+        return provider
+
+    def event_round1_movies(self, event_id: str) -> List[str]:
+        row = self.database.fetch_one(
+            "SELECT round1_movie_ids FROM movie_events WHERE event_id = ?",
+            (event_id,),
+        )
+        return self._decode_movie_ids(row["round1_movie_ids"] if row else None)
+
+    def save_event_round1_movies(
+        self,
+        event_id: str,
+        movie_ids: List[str],
+    ) -> List[str]:
+        """Store the Round 1 line-up once; everyone after the first writer reuses it."""
+        with self.database.write_connection() as connection:
+            row = connection.execute(
+                "SELECT round1_movie_ids FROM movie_events WHERE event_id = ?",
+                (event_id,),
+            ).fetchone()
+            existing = self._decode_movie_ids(row["round1_movie_ids"] if row else None)
+            if existing:
+                return existing
+            connection.execute(
+                """
+                UPDATE movie_events
+                SET round1_movie_ids = ?, updated_at = ?
+                WHERE event_id = ?
+                """,
+                (json.dumps(list(movie_ids)), utc_now(), event_id),
+            )
+        return list(movie_ids)
+
+    @staticmethod
+    def _decode_movie_ids(raw: Optional[str]) -> List[str]:
+        if not raw:
+            return []
+        try:
+            decoded = json.loads(raw)
+        except ValueError:
+            return []
+        return [str(item) for item in decoded] if isinstance(decoded, list) else []
+
     def get_movie(self, movie_id: str) -> Dict[str, Any]:
         row = self.database.fetch_one(
             "SELECT * FROM movies WHERE movie_id = ?",
@@ -75,6 +152,40 @@ class ReelPickRepository:
                 "SELECT * FROM movies ORDER BY title, year"
             )
         ]
+
+    def movies_without_poster(self) -> List[Dict[str, Any]]:
+        return [
+            self._decode_movie(row)
+            for row in self.database.fetch_all(
+                """
+                SELECT * FROM movies
+                WHERE imdb_id IS NOT NULL
+                  AND (poster_url IS NULL OR poster_url = '')
+                ORDER BY last_updated DESC
+                """
+            )
+        ]
+
+    def set_poster_url(self, movie_id: str, poster_url: str) -> None:
+        with self.database.write_connection() as connection:
+            connection.execute(
+                "UPDATE movies SET poster_url = ? WHERE movie_id = ?",
+                (poster_url, movie_id),
+            )
+
+    def set_factual_metadata(self, movie_id: str, factual: Dict[str, Any]) -> None:
+        with self.database.write_connection() as connection:
+            connection.execute(
+                "UPDATE movies SET factual_metadata = ? WHERE movie_id = ?",
+                (json.dumps(factual), movie_id),
+            )
+
+    def set_short_video_url(self, movie_id: str, short_video_url: str) -> None:
+        with self.database.write_connection() as connection:
+            connection.execute(
+                "UPDATE movies SET short_video_url = ? WHERE movie_id = ?",
+                (short_video_url, movie_id),
+            )
 
     def upsert_recommendation_movie(self, movie: Dict[str, Any]) -> Dict[str, Any]:
         title = str(movie["title"]).strip()
@@ -996,6 +1107,266 @@ class ReelPickRepository:
                 (event["event_id"], user_id, display_name.strip(), utc_now()),
             )
         return self.get_event(invite_code)
+
+    EVENT_FLOW = ["inviting", "round1", "round2", "final", "completed"]
+
+    def list_events(self, user_id: str) -> List[Dict[str, Any]]:
+        rows = self.database.fetch_all(
+            """
+            SELECT e.*, p.role
+            FROM movie_events e
+            JOIN event_participants p ON p.event_id = e.event_id
+            WHERE p.user_id = ?
+            ORDER BY e.created_at DESC
+            """,
+            (user_id,),
+        )
+        for row in rows:
+            row["invite_url"] = (
+                f"{row['invite_base_url'].rstrip('/')}/join/{row['invite_code']}"
+            )
+            row["participant_count"] = (
+                self.database.fetch_one(
+                    "SELECT COUNT(*) AS total FROM event_participants WHERE event_id = ?",
+                    (row["event_id"],),
+                )
+                or {"total": 0}
+            )["total"]
+        return rows
+
+    def event_state(self, invite_code: str, user_id: str) -> Dict[str, Any]:
+        event = self.get_event(invite_code)
+        event_id = event["event_id"]
+        status = event["status"]
+        is_host = event["host_user_id"] == user_id
+
+        progress = self.database.fetch_all(
+            "SELECT user_id, stage FROM event_stage_progress WHERE event_id = ?",
+            (event_id,),
+        )
+        done = {stage: set() for stage in ("round1", "round2")}
+        for row in progress:
+            done.setdefault(row["stage"], set()).add(row["user_id"])
+
+        nominations = self.database.fetch_all(
+            """
+            SELECT n.movie_id, n.user_id, m.title, m.year
+            FROM event_nominations n
+            JOIN movies m ON m.movie_id = n.movie_id
+            WHERE n.event_id = ?
+            ORDER BY n.created_at
+            """,
+            (event_id,),
+        )
+        votes = self.database.fetch_all(
+            "SELECT movie_id, user_id, value FROM event_votes WHERE event_id = ?",
+            (event_id,),
+        )
+
+        tally: Dict[str, Dict[str, int]] = {}
+        for vote in votes:
+            counts = tally.setdefault(vote["movie_id"], {"like": 0, "dislike": 0})
+            if vote["value"] in counts:
+                counts[vote["value"]] += 1
+
+        finalists = []
+        if status in {"round2", "final", "completed"}:
+            for movie_id in dict.fromkeys(row["movie_id"] for row in nominations):
+                counts = tally.get(movie_id, {"like": 0, "dislike": 0})
+                finalists.append(
+                    {
+                        "movie_id": movie_id,
+                        "likes": counts["like"],
+                        "dislikes": counts["dislike"],
+                    }
+                )
+            finalists.sort(key=lambda item: (-item["likes"], item["dislikes"]))
+
+        participants = []
+        for participant in event["participants"]:
+            participants.append(
+                {
+                    **participant,
+                    "ready": participant["user_id"] in done.get(_stage_for(status), set()),
+                    "is_you": participant["user_id"] == user_id,
+                }
+            )
+
+        return {
+            "event_id": event_id,
+            "invite_code": event["invite_code"],
+            "invite_url": event["invite_url"],
+            "name": event["name"],
+            "event_date": event["event_date"],
+            "prompt": event["prompt"],
+            "status": status,
+            "is_host": is_host,
+            "host_user_id": event["host_user_id"],
+            "winner_movie_id": event["winner_movie_id"],
+            "participants": participants,
+            "participant_count": len(participants),
+            "ready_count": len(done.get(_stage_for(status), set())),
+            "nomination_count": len(nominations),
+            "nominated_movie_ids": (
+                list(dict.fromkeys(row["movie_id"] for row in nominations))
+                if status in {"round2", "final", "completed"}
+                else []
+            ),
+            "my_nominations": [
+                row["movie_id"] for row in nominations if row["user_id"] == user_id
+            ],
+            "my_votes": {
+                vote["movie_id"]: vote["value"]
+                for vote in votes
+                if vote["user_id"] == user_id
+            },
+            "finalists": finalists,
+        }
+
+    def submit_nominations(
+        self,
+        *,
+        invite_code: str,
+        user_id: str,
+        movie_ids: List[str],
+    ) -> Dict[str, Any]:
+        event = self.get_event(invite_code)
+        self._require_participant(event, user_id)
+        if event["status"] != "round1":
+            raise ConflictError("Round 1 is not open.")
+        if not movie_ids:
+            raise ConflictError("Pick at least one movie.")
+        if len(movie_ids) > 2:
+            raise ConflictError("You can nominate up to two movies.")
+        for movie_id in movie_ids:
+            self.get_movie(movie_id)
+        now = utc_now()
+        with self.database.write_connection() as connection:
+            connection.execute(
+                "DELETE FROM event_nominations WHERE event_id = ? AND user_id = ?",
+                (event["event_id"], user_id),
+            )
+            for movie_id in dict.fromkeys(movie_ids):
+                connection.execute(
+                    """
+                    INSERT INTO event_nominations(event_id, user_id, movie_id, created_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (event["event_id"], user_id, movie_id, now),
+                )
+            connection.execute(
+                """
+                INSERT INTO event_stage_progress(event_id, user_id, stage, submitted_at)
+                VALUES (?, ?, 'round1', ?)
+                ON CONFLICT(event_id, user_id, stage) DO UPDATE SET
+                    submitted_at = excluded.submitted_at
+                """,
+                (event["event_id"], user_id, now),
+            )
+        return self.event_state(invite_code, user_id)
+
+    def submit_votes(
+        self,
+        *,
+        invite_code: str,
+        user_id: str,
+        votes: Dict[str, str],
+        finished: bool,
+    ) -> Dict[str, Any]:
+        event = self.get_event(invite_code)
+        self._require_participant(event, user_id)
+        if event["status"] != "round2":
+            raise ConflictError("Voting is not open.")
+        now = utc_now()
+        with self.database.write_connection() as connection:
+            for movie_id, value in votes.items():
+                if value not in {"like", "dislike", "abstain"}:
+                    raise ConflictError("Invalid vote value.")
+                connection.execute(
+                    """
+                    INSERT INTO event_votes(event_id, user_id, movie_id, value, updated_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(event_id, user_id, movie_id) DO UPDATE SET
+                        value = excluded.value,
+                        updated_at = excluded.updated_at
+                    """,
+                    (event["event_id"], user_id, movie_id, value, now),
+                )
+            if finished:
+                connection.execute(
+                    """
+                    INSERT INTO event_stage_progress(event_id, user_id, stage, submitted_at)
+                    VALUES (?, ?, 'round2', ?)
+                    ON CONFLICT(event_id, user_id, stage) DO UPDATE SET
+                        submitted_at = excluded.submitted_at
+                    """,
+                    (event["event_id"], user_id, now),
+                )
+        return self.event_state(invite_code, user_id)
+
+    def advance_event(
+        self,
+        *,
+        invite_code: str,
+        user_id: str,
+        status: str,
+    ) -> Dict[str, Any]:
+        event = self.get_event(invite_code)
+        if event["host_user_id"] != user_id:
+            raise ConflictError("Only the host can move the movie night on.")
+        if status not in self.EVENT_FLOW:
+            raise ConflictError("Unknown movie night stage.")
+        current = self.EVENT_FLOW.index(event["status"])
+        target = self.EVENT_FLOW.index(status)
+        if target != current + 1:
+            raise ConflictError(f"Cannot move from {event['status']} to {status}.")
+        if status == "round2":
+            nominations = self.database.fetch_one(
+                "SELECT COUNT(*) AS total FROM event_nominations WHERE event_id = ?",
+                (event["event_id"],),
+            )
+            if not nominations or not nominations["total"]:
+                raise ConflictError("Nobody has nominated a movie yet.")
+        self._set_event_status(event["event_id"], status)
+        return self.event_state(invite_code, user_id)
+
+    def set_event_winner(
+        self,
+        *,
+        invite_code: str,
+        user_id: str,
+        movie_id: str,
+    ) -> Dict[str, Any]:
+        event = self.get_event(invite_code)
+        if event["host_user_id"] != user_id:
+            raise ConflictError("Only the host can pick the winner.")
+        if event["status"] not in {"final", "completed"}:
+            raise ConflictError("The winner can only be picked after voting.")
+        self.get_movie(movie_id)
+        with self.database.write_connection() as connection:
+            connection.execute(
+                """
+                UPDATE movie_events
+                SET winner_movie_id = ?, status = 'completed', updated_at = ?
+                WHERE event_id = ?
+                """,
+                (movie_id, utc_now(), event["event_id"]),
+            )
+        return self.event_state(invite_code, user_id)
+
+    def _set_event_status(self, event_id: str, status: str) -> None:
+        with self.database.write_connection() as connection:
+            connection.execute(
+                "UPDATE movie_events SET status = ?, updated_at = ? WHERE event_id = ?",
+                (status, utc_now(), event_id),
+            )
+
+    @staticmethod
+    def _require_participant(event: Dict[str, Any], user_id: str) -> None:
+        if not any(
+            participant["user_id"] == user_id for participant in event["participants"]
+        ):
+            raise NotFoundError("You have not joined this movie night.")
 
     def bootstrap(self, user_id: str) -> Dict[str, Any]:
         user = self.ensure_user(user_id)

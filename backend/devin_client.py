@@ -7,25 +7,26 @@ from typing import Any, Dict, List, Optional
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from .net import default_ssl_context
 
-ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_PROMPT_PATH = ROOT / "prompts" / "movie_search.txt"
-DEFAULT_MEMORY_PROMPT_PATH = ROOT / "prompts" / "preference_analysis.txt"
-
-
-class DevinConfigurationError(RuntimeError):
-    pass
-
-
-class DevinAPIError(RuntimeError):
-    pass
-
-
-class DevinSessionTimeout(TimeoutError):
-    pass
+from .errors import (
+    RecommenderAPIError,
+    RecommenderConfigurationError,
+    RecommenderTimeout,
+)
+from .prompting import (
+    DEFAULT_MEMORY_PROMPT_PATH,
+    DEFAULT_PROMPT_PATH,
+    PromptBuilder,
+)
 
 
-class DevinClient:
+DevinConfigurationError = RecommenderConfigurationError
+DevinAPIError = RecommenderAPIError
+DevinSessionTimeout = RecommenderTimeout
+
+
+class DevinClient(PromptBuilder):
     def __init__(
         self,
         api_key: str,
@@ -87,7 +88,7 @@ class DevinClient:
         )
         recommendations = payload.get("recommendations")
         if not isinstance(recommendations, list):
-            raise DevinAPIError("Devin finished without movie recommendations.")
+            raise DevinAPIError("The recommendation service finished without movie recommendations.")
         return {
             "session_id": session_id,
             "interpreted_request": payload.get("interpreted_request", {}),
@@ -147,7 +148,7 @@ class DevinClient:
         )
         session_id = session.get("session_id")
         if not session_id:
-            raise DevinAPIError("Devin did not return a session ID.")
+            raise DevinAPIError("The recommendation service did not return a session ID.")
 
         deadline = time.monotonic() + self.session_timeout
         while time.monotonic() < deadline:
@@ -167,213 +168,18 @@ class DevinClient:
             if status in {"error", "suspended"}:
                 reason = status_detail or status
                 raise DevinAPIError(
-                    f"Devin session stopped with status {reason} before returning output."
+                    f"The recommendation service stopped with status {reason} before returning output."
                 )
             if status_detail in {"waiting_for_user", "waiting_for_approval"}:
                 raise DevinAPIError(
-                    f"Devin session is {status_detail.replace('_', ' ')} instead of returning output."
+                    f"The recommendation service is {status_detail.replace('_', ' ')} instead of returning output."
                 )
             time.sleep(self.poll_interval)
 
-        raise DevinSessionTimeout("Devin took too long to return structured output.")
+        raise DevinSessionTimeout("The recommendation service took too long to answer.")
 
     def _sessions_path(self) -> str:
         return f"/organizations/{self.org_id}/sessions"
-
-    def _build_prompt(self, *, prompt: str, count: int, context: Dict[str, Any]) -> str:
-        try:
-            master_prompt = self.prompt_path.read_text(encoding="utf-8").strip()
-        except OSError as error:
-            raise DevinConfigurationError(
-                f"Movie search prompt could not be read at {self.prompt_path}."
-            ) from error
-
-        replacements = {
-            "{{current_request}}": json.dumps(prompt, ensure_ascii=False),
-            "{{user_description}}": json.dumps(
-                context.get("user_description", ""), ensure_ascii=False
-            ),
-            "{{liked_movies}}": json.dumps(
-                context.get("liked", []), ensure_ascii=False, indent=2
-            ),
-            "{{disliked_movies}}": json.dumps(
-                context.get("disliked", []), ensure_ascii=False, indent=2
-            ),
-            "{{already_watched_movies}}": json.dumps(
-                context.get("watched", []), ensure_ascii=False, indent=2
-            ),
-            "{{watchlist_movies}}": json.dumps(
-                context.get("watchlist", []), ensure_ascii=False, indent=2
-            ),
-            "{{preference_memory}}": json.dumps(
-                context.get("memory_entries", []), ensure_ascii=False, indent=2
-            ),
-            "{{excluded_movies}}": json.dumps(
-                context.get("excluded", []), ensure_ascii=False, indent=2
-            ),
-        }
-        rendered_prompt = master_prompt
-        for placeholder, value in replacements.items():
-            rendered_prompt = rendered_prompt.replace(placeholder, value)
-        return (
-            f"{rendered_prompt}\n\n"
-            f"For this API request, return exactly {count} recommendations. "
-            "This overrides fixed counts above only for refill requests. "
-            "If no additional verified, eligible movies exist, return fewer rather "
-            "than inventing candidates. "
-            f"The recommendation mode is {json.dumps(context.get('mode', 'personal'))}. "
-            "Return only the structured output requested by the API. "
-            "Do not ask follow-up questions and do not create or modify files."
-        )
-
-    def _output_schema(self, count: int) -> Dict[str, Any]:
-        return {
-            "type": "object",
-            "additionalProperties": False,
-            "required": ["interpreted_request", "recommendations"],
-            "properties": {
-                "interpreted_request": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "required": ["summary", "hard_constraints", "soft_preferences"],
-                    "properties": {
-                        "summary": {"type": "string"},
-                        "hard_constraints": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                        },
-                        "soft_preferences": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                        },
-                    },
-                },
-                "recommendations": {
-                    "type": "array",
-                    "minItems": 0,
-                    "maxItems": count,
-                    "items": {
-                        "type": "object",
-                        "additionalProperties": False,
-                        "required": [
-                            "title",
-                            "year",
-                            "imdb_id",
-                            "imdb_url",
-                            "match_score",
-                            "recommendation_type",
-                            "reason",
-                            "preference_connections",
-                            "possible_mismatch",
-                            "in_watchlist",
-                        ],
-                        "properties": {
-                            "title": {"type": "string"},
-                            "year": {"type": "integer"},
-                            "imdb_id": {
-                                "anyOf": [{"type": "string"}, {"type": "null"}]
-                            },
-                            "imdb_url": {
-                                "anyOf": [{"type": "string"}, {"type": "null"}]
-                            },
-                            "match_score": {
-                                "type": "integer",
-                                "minimum": 70,
-                                "maximum": 100,
-                            },
-                            "recommendation_type": {
-                                "type": "string",
-                                "enum": [
-                                    "strong_match",
-                                    "broader_match",
-                                    "discovery_pick",
-                                ],
-                            },
-                            "reason": {"type": "string"},
-                            "preference_connections": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                            },
-                            "possible_mismatch": {
-                                "anyOf": [{"type": "string"}, {"type": "null"}]
-                            },
-                            "in_watchlist": {"type": "boolean"},
-                        },
-                    },
-                }
-            },
-        }
-
-    def _memory_output_schema(self) -> Dict[str, Any]:
-        return {
-            "type": "object",
-            "additionalProperties": False,
-            "required": ["operations", "summary"],
-            "properties": {
-                "operations": {
-                    "type": "array",
-                    "maxItems": 8,
-                    "items": {
-                        "type": "object",
-                        "additionalProperties": False,
-                        "required": [
-                            "operation",
-                            "entry_id",
-                            "dimension",
-                            "target",
-                            "direction",
-                            "strength",
-                            "confidence",
-                            "context_scope",
-                            "context_id",
-                            "supporting_feedback_ids",
-                            "contradicting_feedback_ids",
-                            "evidence_summary",
-                        ],
-                        "properties": {
-                            "operation": {
-                                "type": "string",
-                                "enum": ["add", "revise", "retract", "no_change"],
-                            },
-                            "entry_id": {
-                                "anyOf": [{"type": "string"}, {"type": "null"}]
-                            },
-                            "dimension": {"type": "string"},
-                            "target": {"type": "string"},
-                            "direction": {
-                                "type": "string",
-                                "enum": ["prefer", "avoid"],
-                            },
-                            "strength": {
-                                "type": "string",
-                                "enum": ["soft_preference", "explicit_restriction"],
-                            },
-                            "confidence": {
-                                "type": "string",
-                                "enum": ["tentative", "supported"],
-                            },
-                            "context_scope": {
-                                "type": "string",
-                                "enum": ["general", "session", "event"],
-                            },
-                            "context_id": {
-                                "anyOf": [{"type": "string"}, {"type": "null"}]
-                            },
-                            "supporting_feedback_ids": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                            },
-                            "contradicting_feedback_ids": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                            },
-                            "evidence_summary": {"type": "string"},
-                        },
-                    },
-                },
-                "summary": {"type": "string"},
-            },
-        }
 
     def _extract_movies(self, details: Dict[str, Any]) -> List[Dict[str, Any]]:
         parsed = self._extract_payload(details)
@@ -382,7 +188,7 @@ class DevinClient:
         if isinstance(parsed.get("movies"), list):
             return parsed["movies"]
 
-        raise DevinAPIError("Devin finished without a valid movie recommendation payload.")
+        raise DevinAPIError("The recommendation service returned an unreadable answer.")
 
     def _extract_payload(self, details: Dict[str, Any]) -> Dict[str, Any]:
         structured_output = details.get("structured_output")
@@ -397,7 +203,7 @@ class DevinClient:
             if isinstance(parsed, dict):
                 return parsed
 
-        raise DevinAPIError("Devin finished without a valid movie recommendation payload.")
+        raise DevinAPIError("The recommendation service returned an unreadable answer.")
 
     def _parse_json_value(self, value: Any) -> Optional[Any]:
         if isinstance(value, (dict, list)):
@@ -438,14 +244,16 @@ class DevinClient:
             },
         )
         try:
-            with urlopen(request, timeout=self.request_timeout) as response:
+            with urlopen(
+                request, timeout=self.request_timeout, context=default_ssl_context()
+            ) as response:
                 return json.loads(response.read().decode("utf-8"))
         except HTTPError as error:
             detail = error.read().decode("utf-8", errors="replace")
             raise DevinAPIError(
-                f"Devin API returned HTTP {error.code}: {detail[:500]}"
+                f"The recommendation service returned HTTP {error.code}: {detail[:500]}"
             ) from error
         except (URLError, TimeoutError) as error:
-            raise DevinAPIError(f"Could not reach the Devin API: {error}") from error
+            raise DevinAPIError(f"Could not reach the recommendation service: {error}") from error
         except json.JSONDecodeError as error:
-            raise DevinAPIError("Devin API returned invalid JSON.") from error
+            raise DevinAPIError("The recommendation service returned invalid JSON.") from error

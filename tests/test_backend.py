@@ -5,7 +5,8 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from backend.database import Database
+from backend import onboarding
+from backend.database import SEEDED_MOVIES, Database
 from backend.devin_client import DevinAPIError, DevinClient
 from backend.main import app, get_devin_client
 from backend.memory import PreferenceAnalysisWorker
@@ -102,6 +103,10 @@ def repository(tmp_path: Path) -> ReelPickRepository:
 def client(repository, monkeypatch):
     monkeypatch.delenv("DEVIN_API_KEY", raising=False)
     monkeypatch.delenv("DEVIN_ORG_ID", raising=False)
+    monkeypatch.delenv("NEBIUS_API_KEY", raising=False)
+    monkeypatch.setattr("backend.main.attach_posters", lambda repo, movies: None)
+    monkeypatch.setattr("backend.main.attach_details", lambda repo, movies: None)
+    monkeypatch.setattr("backend.main.attach_trailers", lambda repo, movies: None)
     app.state.database = repository.database
     app.state.repository = repository
     app.dependency_overrides.clear()
@@ -144,7 +149,11 @@ def test_health_and_bootstrap_are_persistent(client) -> None:
     assert client.get("/api/health").json() == {"status": "ok"}
     payload = client.get("/api/bootstrap").json()
 
-    assert len(payload["movies"]) == 10
+    catalogue = {movie["movie_id"] for movie in payload["movies"]}
+    assert {movie_id for movie_id, *_ in SEEDED_MOVIES} <= catalogue
+    assert {
+        (entry["title"], entry["year"]) for entry in onboarding.CATALOGUE
+    } <= {(movie["title"], movie["year"]) for movie in payload["movies"]}
     assert {item["movie_id"] for item in payload["feedback"] if item["value"] == "saved"} == {
         "about-time"
     }
