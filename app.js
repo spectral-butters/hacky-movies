@@ -51,6 +51,7 @@ const state = {
   session: {
     mode: "personal",
     backendId: null,
+    eventId: null,
     movieIds: movies.slice(0, 5).map((movie) => movie.id),
     index: 0,
     reactions: {},
@@ -1003,7 +1004,7 @@ function renderWatchlist() {
                         <h3>${movie.title}</h3>
                         <p>${movie.year} · ${movie.genre}</p>
                         <div class="inline-actions">
-                          <button class="small-button small-button--accent" data-action="where-to-watch" data-movie="${movie.id}">Where to watch</button>
+                          <button class="small-button small-button--accent" data-action="where-to-watch" data-movie="${movie.id}">Watch</button>
                           <button class="small-button" data-action="watched-from-list" data-movie="${movie.id}">Already watched</button>
                           <button class="overflow-button" data-action="watch-menu" data-movie="${movie.id}">${icon("more", 16)}</button>
                         </div>
@@ -1023,6 +1024,7 @@ function startFeed(mode, movieIds, backendId = null) {
   state.session = {
     mode,
     backendId: backendId || state.session.backendId,
+    eventId: mode === "personal" ? null : state.event.id,
     movieIds,
     index: 0,
     reactions: mode === "personal" ? state.session.reactions : {},
@@ -1108,6 +1110,14 @@ async function startPersonalRecommendations({ additional = false } = {}) {
   } else if (result) {
     showToast(result.shortfallReason || "No additional verified movies found.");
   }
+}
+
+function roundOneSessionIsResumable() {
+  return (
+    state.session.mode === "round1" &&
+    state.session.eventId === state.event.id &&
+    state.session.movieIds.length > 0
+  );
 }
 
 async function startRoundOneRecommendations() {
@@ -1370,7 +1380,7 @@ function renderPersonalFinal() {
         <p>${movie.year} · ${movie.genre}</p>
       </div>
       <div class="button-stack push-bottom">
-        <button class="primary-button" data-action="where-to-watch" data-movie="${movie.id}">Where to watch on ${movie.provider} ${icon("arrow", 17)}</button>
+        <button class="primary-button" data-action="where-to-watch" data-movie="${movie.id}">Watch ${icon("arrow", 17)}</button>
         ${state.library.watchlist.has(movie.id) ? "" : '<button class="secondary-button" data-action="save-chosen">Save to Watchlist</button>'}
         <button class="quiet-button" data-action="home">Start over</button>
       </div>
@@ -1774,7 +1784,7 @@ function renderWinner() {
         <p style="margin:4px 0 0;color:var(--muted);font-size:9px">${formatDate(state.event.date)} · ${server.participant_count || 1} participants</p>
       </div>
       <div class="button-stack push-bottom">
-        <button class="primary-button" data-action="where-to-watch" data-movie="${movie.id}">Where to watch on ${movie.provider} ${icon("arrow", 17)}</button>
+        <button class="primary-button" data-action="where-to-watch" data-movie="${movie.id}">Watch ${icon("arrow", 17)}</button>
         <button class="secondary-button" data-action="end-night">End movie night</button>
       </div>
     </section>
@@ -1798,7 +1808,7 @@ function renderCompleted() {
           <p class="eyebrow" style="margin:0 0 8px">Winning movie</p>
           <h3>${movie.title}</h3>
           <p>${movie.year} · ${movie.genre}</p>
-          <button class="small-button small-button--accent" data-action="where-to-watch" data-movie="${movie.id}">Where to watch</button>
+          <button class="small-button small-button--accent" data-action="where-to-watch" data-movie="${movie.id}">Watch</button>
         </div>
       </div>
       <div class="section-heading"><h2>Nominations</h2></div>
@@ -1848,7 +1858,7 @@ function renderModal() {
           ${movieCredits(movie)}
           <div class="button-stack">
             ${clipUrl(movie) ? `<button class="secondary-button" data-action="play-clip" data-movie="${movie.id}">${icon("play", 17)} Play the short</button>` : ""}
-            <button class="primary-button" data-action="where-to-watch" data-movie="${movie.id}">Where to watch on ${movie.provider}</button>
+            <button class="primary-button" data-action="where-to-watch" data-movie="${movie.id}">Watch</button>
             <button class="secondary-button" data-action="quick-save" data-movie="${movie.id}">${state.library.watchlist.has(movie.id) ? "Remove from Watchlist" : "Save to Watchlist"}</button>
           </div>
         </div>
@@ -2445,10 +2455,7 @@ app.addEventListener("click", (event) => {
         showToast("Watchlist updated");
       }
     },
-    "exit-feed": () => {
-      if (state.session.mode === "personal") navigate("home");
-      else navigate("lobby");
-    },
+    "exit-feed": () => goBack(),
     "choose-likes": () => navigate("personal-choice"),
     "more-recommendations": () => {
       startPersonalRecommendations({ additional: true });
@@ -2504,7 +2511,7 @@ app.addEventListener("click", (event) => {
         state.loading = false;
         state.loadingMessage = "";
       }
-      navigate("lobby");
+      navigate("lobby", { replace: true });
     },
     "copy-link": async () => {
       try {
@@ -2538,7 +2545,11 @@ app.addEventListener("click", (event) => {
       startEventPolling();
       startRoundOneRecommendations();
     },
-    "get-my-picks": () => startRoundOneRecommendations(),
+    "get-my-picks": () => {
+      if (!roundOneSessionIsResumable()) return startRoundOneRecommendations();
+      const done = state.session.movieIds.every((id) => state.session.reactions[id]);
+      return navigate(done ? "round1-select" : "feed");
+    },
     "save-name": async () => {
       const name = document.querySelector("#displayName")?.value.trim();
       if (!name) return showToast("Add a name first");
@@ -2566,7 +2577,7 @@ app.addEventListener("click", (event) => {
         return showToast(error instanceof Error ? error.message : "Could not lock your picks.");
       }
       startEventPolling();
-      navigate("wait-round1");
+      navigate("wait-round1", { replace: true });
     },
     "edit-picks": () => navigate("round1-select"),
     "manage-round1": () => navigate("manage-round1"),
@@ -2599,7 +2610,7 @@ app.addEventListener("click", (event) => {
       } catch (error) {
         return showToast(error instanceof Error ? error.message : "Could not close Round 2.");
       }
-      navigate("finalists");
+      navigate("finalists", { replace: true });
     },
     "select-winner": () => {
       state.modal = { type: "winner", movieId };
@@ -2614,12 +2625,12 @@ app.addEventListener("click", (event) => {
       } catch (error) {
         return showToast(error instanceof Error ? error.message : "Could not save the winner.");
       }
-      navigate("winner");
+      navigate("winner", { replace: true });
     },
     "end-night": () => {
       state.event.completed = true;
       state.event.round = "completed";
-      navigate("completed");
+      navigate("completed", { replace: true });
     },
     "open-event": () => openEvent(target.dataset.code || state.event.inviteCode),
     logout: () => {
@@ -2784,21 +2795,23 @@ async function routeForEventState(previousStatus, payload, unchanged = false) {
   );
 
   if (payload.status === "completed") {
-    if (state.route !== "winner" && state.route !== "completed") return navigate("winner");
+    if (state.route !== "winner" && state.route !== "completed") {
+      return navigate("winner", { replace: true });
+    }
     return renderEventUpdate(unchanged);
   }
   if (payload.status === "final") {
     if (payload.is_host) {
-      if (state.route !== "finalists") return navigate("finalists");
+      if (state.route !== "finalists") return navigate("finalists", { replace: true });
     } else if (state.route !== "wait-round2") {
-      return navigate("wait-round2");
+      return navigate("wait-round2", { replace: true });
     }
     return renderEventUpdate(unchanged);
   }
   if (payload.status === "round2") {
     if (iAmReady) {
       if (state.route !== "wait-round2" && state.route !== "manage-round2") {
-        return navigate("wait-round2");
+        return navigate("wait-round2", { replace: true });
       }
       return renderEventUpdate(unchanged);
     }
@@ -2810,7 +2823,7 @@ async function routeForEventState(previousStatus, payload, unchanged = false) {
   if (payload.status === "round1") {
     if (iAmReady) {
       if (state.route !== "wait-round1" && state.route !== "manage-round1") {
-        return navigate("wait-round1");
+        return navigate("wait-round1", { replace: true });
       }
       return renderEventUpdate(unchanged);
     }
