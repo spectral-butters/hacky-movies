@@ -95,6 +95,47 @@ class ReelPickRepository:
             )
         return provider
 
+    def event_round1_movies(self, event_id: str) -> List[str]:
+        row = self.database.fetch_one(
+            "SELECT round1_movie_ids FROM movie_events WHERE event_id = ?",
+            (event_id,),
+        )
+        return self._decode_movie_ids(row["round1_movie_ids"] if row else None)
+
+    def save_event_round1_movies(
+        self,
+        event_id: str,
+        movie_ids: List[str],
+    ) -> List[str]:
+        """Store the Round 1 line-up once; everyone after the first writer reuses it."""
+        with self.database.write_connection() as connection:
+            row = connection.execute(
+                "SELECT round1_movie_ids FROM movie_events WHERE event_id = ?",
+                (event_id,),
+            ).fetchone()
+            existing = self._decode_movie_ids(row["round1_movie_ids"] if row else None)
+            if existing:
+                return existing
+            connection.execute(
+                """
+                UPDATE movie_events
+                SET round1_movie_ids = ?, updated_at = ?
+                WHERE event_id = ?
+                """,
+                (json.dumps(list(movie_ids)), utc_now(), event_id),
+            )
+        return list(movie_ids)
+
+    @staticmethod
+    def _decode_movie_ids(raw: Optional[str]) -> List[str]:
+        if not raw:
+            return []
+        try:
+            decoded = json.loads(raw)
+        except ValueError:
+            return []
+        return [str(item) for item in decoded] if isinstance(decoded, list) else []
+
     def get_movie(self, movie_id: str) -> Dict[str, Any]:
         row = self.database.fetch_one(
             "SELECT * FROM movies WHERE movie_id = ?",

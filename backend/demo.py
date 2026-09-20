@@ -55,6 +55,18 @@ def load_catalogue() -> Dict[str, Any]:
     return payload
 
 
+def clip_url_for(title: str) -> Optional[str]:
+    try:
+        entries = load_catalogue()["movies"]
+    except DemoCatalogueError:
+        return None
+    for entry in entries:
+        if entry["title"].casefold() != str(title).casefold():
+            continue
+        return f"{CLIP_ROUTE}/{quote(entry['file'])}" if clip_path(entry["file"]) else None
+    return None
+
+
 def clip_path(filename: str) -> Optional[Path]:
     candidate = (CLIP_DIR / filename).resolve()
     if CLIP_DIR.resolve() not in candidate.parents:

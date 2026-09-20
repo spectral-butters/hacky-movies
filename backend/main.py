@@ -411,6 +411,44 @@ def warm_catalogues(repository: ReelPickRepository, catalogue: List[Dict[str, An
     backfill_posters(repository)
 
 
+def stored_as_raw(
+    stored_movie: Dict[str, Any],
+    *,
+    demo_mode: bool,
+) -> Dict[str, Any]:
+    attributes = stored_movie.get("ai_attributes") or {}
+    return {
+        "title": stored_movie["title"],
+        "year": stored_movie["year"],
+        "imdb_id": stored_movie.get("imdb_id"),
+        "imdb_url": stored_movie.get("imdb_url"),
+        "reason": attributes.get("reason") or "Part of tonight's shared line-up.",
+        "match_score": attributes.get("match_score") or 0,
+        "recommendation_type": attributes.get("recommendation_type") or "strong_match",
+        "preference_connections": attributes.get("preference_connections") or [],
+        "possible_mismatch": attributes.get("possible_mismatch"),
+        "clip_url": demo.clip_url_for(stored_movie["title"]) if demo_mode else None,
+    }
+
+
+def build_shared_movies(
+    repository: ReelPickRepository,
+    movie_ids: List[str],
+    *,
+    demo_mode: bool,
+) -> List["MovieRecommendation"]:
+    stored_movies = []
+    for movie_id in movie_ids:
+        try:
+            stored_movies.append(repository.get_movie(movie_id))
+        except NotFoundError:
+            continue
+    return [
+        normalize_movie(stored_as_raw(movie, demo_mode=demo_mode), movie, index)
+        for index, movie in enumerate(stored_movies)
+    ]
+
+
 def normalize_movie(
     raw_movie: Dict[str, Any],
     stored_movie: Dict[str, Any],
@@ -672,6 +710,37 @@ async def recommendations(
             }
         )
 
+        shared_ids = (
+            repository.event_round1_movies(request.event_id)
+            if request.mode == "event_nomination" and request.event_id
+            else []
+        )
+        if shared_ids and not request.session_id:
+            normalized = build_shared_movies(
+                repository, shared_ids, demo_mode=demo_mode
+            )
+            batch_id = repository.save_recommendation_batch(
+                session_id=session_id,
+                requested_count=len(normalized),
+                movie_ids=[movie.id for movie in normalized],
+                retained_ids=[],
+                exclusions=[],
+                interpreted_request={"summary": "Shared Round 1 line-up"},
+                model_version="shared-round1",
+                prompt_version="shared-round1",
+            )
+            return RecommendationResponse(
+                session_id=session_id,
+                batch_id=batch_id,
+                devin_session_id=None,
+                requested_count=len(normalized),
+                returned_count=len(normalized),
+                memory_version_used=context["memory_version"],
+                shortfall_reason=None,
+                interpreted_request={"summary": "Shared Round 1 line-up"},
+                movies=normalized,
+            )
+
         if requested_count == 0:
             return RecommendationResponse(
                 session_id=session_id,
@@ -749,6 +818,13 @@ async def recommendations(
             normalized.append(movie)
             movie_ids.append(movie.id)
 
+        if request.mode == "event_nomination" and request.event_id and not request.session_id:
+            saved_ids = repository.save_event_round1_movies(request.event_id, movie_ids)
+            if saved_ids != movie_ids:
+                movie_ids = saved_ids
+                normalized = build_shared_movies(
+                    repository, movie_ids, demo_mode=demo_mode
+                )
         batch_id = repository.save_recommendation_batch(
             session_id=session_id,
             requested_count=requested_count,

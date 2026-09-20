@@ -126,3 +126,97 @@ def test_demo_refill_ignores_lifetime_ratings(monkeypatch) -> None:
     titles = [movie["title"] for movie in result["recommendations"]]
     assert len(titles) == 2
     assert not set(titles) & {entry["title"] for entry in catalogue[:5]}
+
+
+def event_with_round1_open(client):
+    event = client.post(
+        "/api/events", json={"name": "Shared Night", "prompt": "Something tense"},
+        headers={"X-ReelPick-User": "host"},
+    ).json()
+    client.post(
+        f"/api/events/{event['invite_code']}/join", json={"display_name": "Bea"},
+        headers={"X-ReelPick-User": "guest-b"},
+    )
+    client.post(
+        f"/api/events/{event['invite_code']}/round", json={"status": "round1"},
+        headers={"X-ReelPick-User": "host"},
+    )
+    return event
+
+
+def nominations_for(client, event, user):
+    return client.post(
+        "/api/recommendations",
+        json={
+            "prompt": "Something tense",
+            "count": 5,
+            "mode": "event_nomination",
+            "event_id": event["event_id"],
+        },
+        headers={"X-ReelPick-User": user},
+    ).json()
+
+
+def test_every_participant_gets_the_hosts_round1_lineup(client, monkeypatch) -> None:
+    monkeypatch.setenv("REELPICK_DEMO", "1")
+    monkeypatch.setattr(demo, "demo_latency_seconds", lambda: 0.0)
+    event = event_with_round1_open(client)
+
+    host = nominations_for(client, event, "host")
+    guest = nominations_for(client, event, "guest-b")
+
+    assert [m["title"] for m in guest["movies"]] == [m["title"] for m in host["movies"]]
+    assert guest["session_id"] != host["session_id"]
+    assert all(movie["clip_url"] for movie in guest["movies"])
+
+
+def test_the_shared_lineup_survives_a_later_join(client, monkeypatch) -> None:
+    monkeypatch.setenv("REELPICK_DEMO", "1")
+    monkeypatch.setattr(demo, "demo_latency_seconds", lambda: 0.0)
+    event = event_with_round1_open(client)
+    host = nominations_for(client, event, "host")
+
+    client.post(
+        f"/api/events/{event['invite_code']}/join", json={"display_name": "Cal"},
+        headers={"X-ReelPick-User": "guest-c"},
+    )
+    latecomer = nominations_for(client, event, "guest-c")
+
+    assert [m["id"] for m in latecomer["movies"]] == [m["id"] for m in host["movies"]]
+
+
+def test_the_lineup_is_only_generated_once(client, monkeypatch, repository) -> None:
+    monkeypatch.setenv("REELPICK_DEMO", "1")
+    calls = []
+    real = demo.recommend
+
+    def counting(**kwargs):
+        calls.append(kwargs)
+        return real(**kwargs)
+
+    monkeypatch.setattr(demo, "demo_latency_seconds", lambda: 0.0)
+    monkeypatch.setattr(demo, "recommend", counting)
+    event = event_with_round1_open(client)
+
+    nominations_for(client, event, "host")
+    nominations_for(client, event, "guest-b")
+    nominations_for(client, event, "guest-c")
+
+    assert len(calls) == 1
+    assert len(repository.event_round1_movies(event["event_id"])) == 5
+
+
+def test_personal_searches_are_untouched_by_the_shared_lineup(client, monkeypatch) -> None:
+    monkeypatch.setenv("REELPICK_DEMO", "1")
+    monkeypatch.setattr(demo, "demo_latency_seconds", lambda: 0.0)
+    event = event_with_round1_open(client)
+    nominations_for(client, event, "host")
+
+    personal = client.post(
+        "/api/recommendations",
+        json={"prompt": "Something tense", "count": 5, "mode": "personal"},
+        headers={"X-ReelPick-User": "host"},
+    ).json()
+
+    assert personal["returned_count"] == 5
+    assert personal["interpreted_request"].get("summary") != "Shared Round 1 line-up"

@@ -6,7 +6,7 @@ Hackathon MVP for an AI-powered movie recommendation app. The responsive fronten
 
 - **Taste survey:** optional genre hints → five well-known calibration movies → adaptive genre rounds → liked / disliked / haven't watched / watchlist, with an occasional one-tap reason. It stops offering more rounds once there is enough signal (8 rated, 2 likes, 1 dislike) and caps at the 25-movie pool.
 - **Personal:** natural-language prompt → five short-form recommendations → hold-and-drag reactions → liked results → final movie → where to watch.
-- **Movie night:** create event → invite lobby → private nominations → host closes Round 1 → group voting → host picks a finalist → winner.
+- **Movie night:** create event → invite lobby → one shared Round 1 line-up → private nominations → host closes Round 1 → group voting → host picks a finalist → winner.
 - **Library:** burger menu → account, liked/disliked preferences, watchlist, and prior movie nights. The home screen shows the watchlist directly.
 
 Recommendation titles and verified IMDb identities come from Devin. SQLite persists the catalogue, recommendation sessions, append-only feedback audit, current feedback state, preference memory, analysis jobs, watchlists, and movie-night invite links. Short-form media and full multi-device round orchestration remain mocked for the demo.
@@ -65,6 +65,16 @@ PUBLIC_BASE_URL=https://your-reelpick-host.example
 `PUBLIC_BASE_URL` is optional; when omitted, invite links use the incoming request host.
 
 The recommendation endpoint binds the current request to authoritative server-side user description, watched ratings, recommendation interest, watchlist state, and supported preference memory. Frontend-supplied preference lists are ignored.
+
+## Shared Round 1 line-up
+
+Everyone in a movie night nominates from the same five movies. The first Round 1 request for an
+event generates the line-up and stores it on `movie_events.round1_movie_ids`; every later request
+for that event replays it without calling the recommender. Round 1 only opens when the host starts
+it, so in practice the host's request defines the set, and the write is guarded so a race between
+two guests still leaves one agreed line-up.
+
+Each participant keeps their own recommendation session, so nominations and feedback stay private.
 
 ## Trailers
 
