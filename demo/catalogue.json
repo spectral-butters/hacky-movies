@@ -1,0 +1,117 @@
+{
+  "interpreted_request": {
+    "mood": "tense, twisty, character-driven",
+    "era": "modern",
+    "runtime": "under two and a half hours",
+    "avoid": [
+      "light comedy"
+    ]
+  },
+  "movies": [
+    {
+      "file": "Gone girl.mp4",
+      "title": "Gone Girl",
+      "year": 2014,
+      "imdb_id": "tt2267998",
+      "genre": "Thriller \u00b7 Mystery",
+      "reason": "A marriage unravels into a media circus, exactly the cold, controlled tension you asked for.",
+      "match_score": 94,
+      "recommendation_type": "strong_match",
+      "preference_connections": [
+        "Likes unreliable narrators",
+        "Prefers slow-burn tension"
+      ]
+    },
+    {
+      "file": "Nightcrawler.mp4",
+      "title": "Nightcrawler",
+      "year": 2014,
+      "imdb_id": "tt2872718",
+      "genre": "Thriller \u00b7 Crime",
+      "reason": "Los Angeles at night, a camera, and a man with no brakes. Relentlessly uncomfortable.",
+      "match_score": 91,
+      "recommendation_type": "strong_match",
+      "preference_connections": [
+        "Likes morally grey leads"
+      ]
+    },
+    {
+      "file": "Prestige.mp4",
+      "title": "The Prestige",
+      "year": 2006,
+      "imdb_id": "tt0482571",
+      "genre": "Mystery \u00b7 Drama",
+      "reason": "Two magicians ruin each other over one trick. Structured like a puzzle box, pays off twice.",
+      "match_score": 89,
+      "recommendation_type": "strong_match",
+      "preference_connections": [
+        "Likes twist endings"
+      ]
+    },
+    {
+      "file": "Menu.mp4",
+      "title": "The Menu",
+      "year": 2022,
+      "imdb_id": "tt9764362",
+      "genre": "Thriller \u00b7 Dark comedy",
+      "reason": "A tasting menu that turns into a trap. Sharper and funnier than the rest of this list.",
+      "match_score": 82,
+      "recommendation_type": "broader_match",
+      "preference_connections": [
+        "Open to dark comedy"
+      ]
+    },
+    {
+      "file": "Zodiac.mp4",
+      "title": "Zodiac",
+      "year": 2007,
+      "imdb_id": "tt0443706",
+      "genre": "Mystery \u00b7 Crime",
+      "reason": "An obsession procedural about a case nobody closes. Patient, detailed, quietly devastating.",
+      "match_score": 87,
+      "recommendation_type": "strong_match",
+      "preference_connections": [
+        "Likes slow-burn investigations"
+      ]
+    },
+    {
+      "file": "Nocturnal animals.mp4",
+      "title": "Nocturnal Animals",
+      "year": 2016,
+      "imdb_id": "tt4550098",
+      "genre": "Thriller \u00b7 Drama",
+      "reason": "A novel inside a marriage inside a revenge story. Cold, stylish, and genuinely cruel.",
+      "match_score": 85,
+      "recommendation_type": "strong_match",
+      "preference_connections": [
+        "Likes nested storytelling"
+      ]
+    },
+    {
+      "file": "The Game.mp4",
+      "title": "The Game",
+      "year": 1997,
+      "imdb_id": "tt0119174",
+      "genre": "Thriller \u00b7 Mystery",
+      "reason": "A birthday gift becomes a conspiracy you cannot opt out of. Paranoia played straight.",
+      "match_score": 80,
+      "recommendation_type": "broader_match",
+      "preference_connections": [
+        "Likes paranoid thrillers"
+      ]
+    },
+    {
+      "file": "Gentlemen.mp4",
+      "title": "The Gentlemen",
+      "year": 2019,
+      "imdb_id": "tt8367814",
+      "genre": "Crime \u00b7 Comedy",
+      "reason": "A drug empire changes hands through blackmail and bad manners. Fast, funny, and very pleased with itself.",
+      "match_score": 79,
+      "recommendation_type": "broader_match",
+      "preference_connections": [
+        "Open to crime capers"
+      ]
+    }
+  ]
+}
